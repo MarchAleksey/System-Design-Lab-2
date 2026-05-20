@@ -4,7 +4,7 @@ project(messenger_service CXX)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(DownloadUserver)
 
-find_package(userver COMPONENTS core QUIET)
+find_package(userver COMPONENTS core postgresql QUIET)
 if(NOT userver_FOUND)
   download_userver(GIT_TAG v2.8.0)
 endif()
@@ -17,12 +17,12 @@ add_library(${PROJECT_NAME}_objs OBJECT
   src/handlers/handlers.cpp
 )
 target_include_directories(${PROJECT_NAME}_objs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(${PROJECT_NAME}_objs PUBLIC userver::core)
+target_link_libraries(${PROJECT_NAME}_objs PUBLIC userver::core userver::postgresql)
 
 add_executable(${PROJECT_NAME} src/main.cpp)
 target_link_libraries(${PROJECT_NAME} PRIVATE ${PROJECT_NAME}_objs)
 
-userver_testsuite_add_simple()
+userver_testsuite_add_simple(DATABASES postgresql)
 
 include(GNUInstallDirs)
 if(DEFINED ENV{PREFIX})

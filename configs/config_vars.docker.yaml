@@ -7,4 +7,4 @@ is_testing: false
 server-port: 8080
 jwt-secret: dev-secret-change-me
 
-pg-dsn: postgresql://messenger:messenger@localhost:5432/messenger
+pg-dsn: postgresql://messenger:messenger@postgres:5432/messenger
