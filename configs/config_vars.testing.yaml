@@ -1,2 +1,1 @@
 is_testing: true
-pg-dsn: $postgresql

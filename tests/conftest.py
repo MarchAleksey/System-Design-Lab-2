@@ -1,4 +1,1 @@
-pytest_plugins = [
-    'pytest_userver.plugins.core',
-    'pytest_userver.plugins.postgresql',
-]
+pytest_plugins = ['pytest_userver.plugins.core']

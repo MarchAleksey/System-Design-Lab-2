@@ -1,12 +1,11 @@
 #include "storage/storage.hpp"
 
-#include <stdexcept>
+#include <algorithm>
+#include <cctype>
+#include <sstream>
 
 #include <userver/components/component.hpp>
 #include <userver/formats/json/value_builder.hpp>
-#include <userver/storages/postgres/component.hpp>
-#include <userver/storages/postgres/exceptions.hpp>
-#include <userver/storages/postgres/result_set.hpp>
 #include <userver/utils/datetime.hpp>
 
 #include "errors.hpp"
@@ -15,59 +14,16 @@ namespace messenger::storage {
 
 namespace {
 
-using userver::storages::postgres::ClusterHostType;
-
-std::string ExternalId(const char* prefix, std::int64_t id) {
-  return std::string(prefix) + std::to_string(id);
+std::string ToLower(std::string s) {
+  for (auto& c : s) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return s;
 }
 
-User RowToUser(const userver::storages::postgres::Row& row) {
-  const auto id = row["id"].As<std::int64_t>();
-  return User{
-      .id = ExternalId("user-", id),
-      .login = row["login"].As<std::string>(),
-      .first_name = row["first_name"].As<std::string>(),
-      .last_name = row["last_name"].As<std::string>(),
-      .password_hash = row["password_hash"].As<std::string>(),
-      .created_at = row["created_at"].As<std::chrono::system_clock::time_point>(),
-  };
-}
-
-GroupChat RowToGroupChat(const userver::storages::postgres::Row& row) {
-  const auto id = row["id"].As<std::int64_t>();
-  const auto creator = row["created_by_id"].As<std::int64_t>();
-  return GroupChat{
-      .id = ExternalId("chat-", id),
-      .name = row["name"].As<std::string>(),
-      .created_by_id = ExternalId("user-", creator),
-      .created_at = row["created_at"].As<std::chrono::system_clock::time_point>(),
-  };
-}
-
-GroupMessage RowToGroupMessage(const userver::storages::postgres::Row& row) {
-  const auto id = row["id"].As<std::int64_t>();
-  const auto chat_id = row["chat_id"].As<std::int64_t>();
-  const auto sender_id = row["sender_id"].As<std::int64_t>();
-  return GroupMessage{
-      .id = ExternalId("gmsg-", id),
-      .chat_id = ExternalId("chat-", chat_id),
-      .sender_id = ExternalId("user-", sender_id),
-      .content = row["content"].As<std::string>(),
-      .created_at = row["created_at"].As<std::chrono::system_clock::time_point>(),
-  };
-}
-
-P2PMessage RowToP2PMessage(const userver::storages::postgres::Row& row) {
-  const auto id = row["id"].As<std::int64_t>();
-  const auto sender_id = row["sender_id"].As<std::int64_t>();
-  const auto recipient_id = row["recipient_id"].As<std::int64_t>();
-  return P2PMessage{
-      .id = ExternalId("pmsg-", id),
-      .sender_id = ExternalId("user-", sender_id),
-      .recipient_id = ExternalId("user-", recipient_id),
-      .content = row["content"].As<std::string>(),
-      .created_at = row["created_at"].As<std::chrono::system_clock::time_point>(),
-  };
+bool IContains(const std::string& haystack, const std::string& needle) {
+  if (needle.empty()) return true;
+  return ToLower(haystack).find(ToLower(needle)) != std::string::npos;
 }
 
 }  // namespace
@@ -113,231 +69,171 @@ userver::formats::json::Value P2PMessageToJson(const P2PMessage& msg) {
 
 MessengerStorage::MessengerStorage(const userver::components::ComponentConfig& config,
                                    const userver::components::ComponentContext& context)
-    : ComponentBase(config, context) {
-  const auto component_name = config["postgres-component"].As<std::string>("postgres-database");
-  pg_ = context.FindComponent<userver::components::Postgres>(component_name).GetCluster();
-}
+    : ComponentBase(config, context) {}
 
-std::int64_t MessengerStorage::ParseEntityId(const std::string& external_id,
-                                             const char* prefix) {
-  const std::string expected{prefix};
-  if (external_id.size() <= expected.size() ||
-      external_id.compare(0, expected.size(), expected) != 0) {
-    throw errors::ClientError(errors::Msg("Invalid identifier format"));
-  }
-  try {
-    return std::stoll(external_id.substr(expected.size()));
-  } catch (const std::exception&) {
-    throw errors::ClientError(errors::Msg("Invalid identifier format"));
-  }
+std::string MessengerStorage::NextId(const char* prefix) {
+  std::ostringstream oss;
+  oss << prefix << '-' << ++id_counter_;
+  return oss.str();
 }
 
 User MessengerStorage::CreateUser(const std::string& login, const std::string& first_name,
                                   const std::string& last_name,
                                   const std::string& password_hash) {
-  try {
-    const auto result = pg_->Execute(
-        ClusterHostType::kMaster,
-        "INSERT INTO users (login, first_name, last_name, password_hash) "
-        "VALUES ($1, $2, $3, $4) "
-        "RETURNING id, login, first_name, last_name, password_hash, created_at",
-        login, first_name, last_name, password_hash);
-    return RowToUser(result[0]);
-  } catch (const userver::storages::postgres::UniqueViolation&) {
+  std::lock_guard lock(mutex_);
+  if (login_index_.count(login)) {
     throw errors::ConflictError(errors::Msg("Login already taken"));
   }
+  User user{
+      .id = NextId("user"),
+      .login = login,
+      .first_name = first_name,
+      .last_name = last_name,
+      .password_hash = password_hash,
+      .created_at = userver::utils::datetime::Now(),
+  };
+  users_.emplace(user.id, user);
+  login_index_[login] = user.id;
+  return user;
 }
 
 std::optional<User> MessengerStorage::FindByLogin(const std::string& login) const {
-  const auto result = pg_->Execute(
-      ClusterHostType::kMaster,
-      "SELECT id, login, first_name, last_name, password_hash, created_at "
-      "FROM users WHERE login = $1",
-      login);
-  if (result.IsEmpty()) return std::nullopt;
-  return RowToUser(result[0]);
+  std::lock_guard lock(mutex_);
+  auto it = login_index_.find(login);
+  if (it == login_index_.end()) return std::nullopt;
+  return users_.at(it->second);
 }
 
 std::vector<User> MessengerStorage::SearchByMask(
     const std::optional<std::string>& first_name_mask,
     const std::optional<std::string>& last_name_mask) const {
-  const auto result = pg_->Execute(
-      ClusterHostType::kMaster,
-      "SELECT id, login, first_name, last_name, password_hash, created_at "
-      "FROM users "
-      "WHERE ($1::text IS NULL OR first_name ILIKE '%' || $1 || '%') "
-      "  AND ($2::text IS NULL OR last_name ILIKE '%' || $2 || '%') "
-      "ORDER BY last_name, first_name",
-      first_name_mask, last_name_mask);
-
-  std::vector<User> users;
-  users.reserve(result.Size());
-  for (const auto& row : result) {
-    users.push_back(RowToUser(row));
+  std::lock_guard lock(mutex_);
+  std::vector<User> result;
+  for (const auto& [_, user] : users_) {
+    bool match = true;
+    if (first_name_mask && !IContains(user.first_name, *first_name_mask)) match = false;
+    if (last_name_mask && !IContains(user.last_name, *last_name_mask)) match = false;
+    if (match) result.push_back(user);
   }
-  return users;
+  return result;
 }
 
 GroupChat MessengerStorage::CreateGroupChat(const std::string& name,
                                             const std::string& creator_id) {
-  const auto creator_pk = ParseEntityId(creator_id, "user-");
-  const auto result = pg_->Execute(
-      ClusterHostType::kMaster,
-      "WITH new_chat AS ("
-      "  INSERT INTO group_chats (name, created_by_id) VALUES ($1, $2) "
-      "  RETURNING id, name, created_by_id, created_at"
-      "), add_creator AS ("
-      "  INSERT INTO group_chat_members (chat_id, user_id) "
-      "  SELECT id, created_by_id FROM new_chat"
-      ") "
-      "SELECT id, name, created_by_id, created_at FROM new_chat",
-      name, creator_pk);
-  return RowToGroupChat(result[0]);
+  std::lock_guard lock(mutex_);
+  GroupChat chat{
+      .id = NextId("chat"),
+      .name = name,
+      .created_by_id = creator_id,
+      .created_at = userver::utils::datetime::Now(),
+  };
+  chats_.emplace(chat.id, chat);
+  members_[chat.id][creator_id] = true;
+  return chat;
 }
 
 void MessengerStorage::AddMember(const std::string& chat_id, const std::string& user_id) {
-  const auto chat_pk = ParseEntityId(chat_id, "chat-");
-  const auto user_pk = ParseEntityId(user_id, "user-");
-
-  if (!GetChat(chat_id)) {
+  std::lock_guard lock(mutex_);
+  if (!chats_.count(chat_id)) {
     throw errors::ResourceNotFound(errors::Msg("Group chat not found"));
   }
-
-  const auto user_row = pg_->Execute(ClusterHostType::kMaster,
-                                     "SELECT 1 FROM users WHERE id = $1", user_pk);
-  if (user_row.IsEmpty()) {
+  if (!users_.count(user_id)) {
     throw errors::ResourceNotFound(errors::Msg("User to add not found"));
   }
-
-  const auto member_row =
-      pg_->Execute(ClusterHostType::kMaster,
-                   "SELECT 1 FROM group_chat_members WHERE chat_id = $1 AND user_id = $2",
-                   chat_pk, user_pk);
-  if (!member_row.IsEmpty()) {
+  auto& chat_members = members_[chat_id];
+  if (chat_members.count(user_id)) {
     throw errors::ConflictError(errors::Msg("User already in chat"));
   }
-
-  pg_->Execute(ClusterHostType::kMaster,
-               "INSERT INTO group_chat_members (chat_id, user_id) VALUES ($1, $2)", chat_pk,
-               user_pk);
+  chat_members[user_id] = true;
 }
 
 bool MessengerStorage::IsMember(const std::string& chat_id, const std::string& user_id) const {
-  const auto chat_pk = ParseEntityId(chat_id, "chat-");
-  const auto user_pk = ParseEntityId(user_id, "user-");
-  const auto result = pg_->Execute(ClusterHostType::kMaster,
-                                   "SELECT 1 FROM group_chat_members "
-                                   "WHERE chat_id = $1 AND user_id = $2",
-                                   chat_pk, user_pk);
-  return !result.IsEmpty();
+  std::lock_guard lock(mutex_);
+  auto chat_it = members_.find(chat_id);
+  if (chat_it == members_.end()) return false;
+  return chat_it->second.count(user_id) > 0;
 }
 
 std::optional<GroupChat> MessengerStorage::GetChat(const std::string& chat_id) const {
-  const auto chat_pk = ParseEntityId(chat_id, "chat-");
-  const auto result = pg_->Execute(ClusterHostType::kMaster,
-                                   "SELECT id, name, created_by_id, created_at "
-                                   "FROM group_chats WHERE id = $1",
-                                   chat_pk);
-  if (result.IsEmpty()) return std::nullopt;
-  return RowToGroupChat(result[0]);
+  std::lock_guard lock(mutex_);
+  auto it = chats_.find(chat_id);
+  if (it == chats_.end()) return std::nullopt;
+  return it->second;
 }
 
 GroupMessage MessengerStorage::AddGroupMessage(const std::string& chat_id,
                                                const std::string& sender_id,
                                                const std::string& content) {
-  const auto chat_pk = ParseEntityId(chat_id, "chat-");
-  const auto sender_pk = ParseEntityId(sender_id, "user-");
-
-  if (!GetChat(chat_id)) {
+  std::lock_guard lock(mutex_);
+  if (!chats_.count(chat_id)) {
     throw errors::ResourceNotFound(errors::Msg("Group chat not found"));
   }
-
-  const auto result = pg_->Execute(
-      ClusterHostType::kMaster,
-      "INSERT INTO group_messages (chat_id, sender_id, content) "
-      "VALUES ($1, $2, $3) "
-      "RETURNING id, chat_id, sender_id, content, created_at",
-      chat_pk, sender_pk, content);
-  return RowToGroupMessage(result[0]);
+  GroupMessage msg{
+      .id = NextId("gmsg"),
+      .chat_id = chat_id,
+      .sender_id = sender_id,
+      .content = content,
+      .created_at = userver::utils::datetime::Now(),
+  };
+  group_messages_.push_back(msg);
+  return msg;
 }
 
 std::vector<GroupMessage> MessengerStorage::ListGroupMessages(const std::string& chat_id,
                                                               int limit, int offset) const {
-  const auto chat_pk = ParseEntityId(chat_id, "chat-");
-  const auto result = pg_->Execute(
-      ClusterHostType::kMaster,
-      "SELECT id, chat_id, sender_id, content, created_at "
-      "FROM group_messages WHERE chat_id = $1 "
-      "ORDER BY created_at ASC, id ASC "
-      "LIMIT $2 OFFSET $3",
-      chat_pk, limit, offset);
-
-  std::vector<GroupMessage> messages;
-  messages.reserve(result.Size());
-  for (const auto& row : result) {
-    messages.push_back(RowToGroupMessage(row));
+  std::lock_guard lock(mutex_);
+  std::vector<GroupMessage> filtered;
+  for (const auto& m : group_messages_) {
+    if (m.chat_id == chat_id) filtered.push_back(m);
   }
-  return messages;
+  if (offset >= static_cast<int>(filtered.size())) return {};
+  auto end = std::min(offset + limit, static_cast<int>(filtered.size()));
+  return {filtered.begin() + offset, filtered.begin() + end};
 }
 
 P2PMessage MessengerStorage::AddP2PMessage(const std::string& sender_id,
-                                           const std::string& recipient_id,
-                                           const std::string& content) {
-  const auto sender_pk = ParseEntityId(sender_id, "user-");
-  const auto recipient_pk = ParseEntityId(recipient_id, "user-");
-
-  try {
-    const auto result = pg_->Execute(
-        ClusterHostType::kMaster,
-        "INSERT INTO p2p_messages (sender_id, recipient_id, content) "
-        "VALUES ($1, $2, $3) "
-        "RETURNING id, sender_id, recipient_id, content, created_at",
-        sender_pk, recipient_pk, content);
-    return RowToP2PMessage(result[0]);
-  } catch (const userver::storages::postgres::ForeignKeyViolation&) {
+                                         const std::string& recipient_id,
+                                         const std::string& content) {
+  std::lock_guard lock(mutex_);
+  if (!users_.count(recipient_id)) {
     throw errors::ResourceNotFound(errors::Msg("Recipient not found"));
-  } catch (const userver::storages::postgres::CheckViolation&) {
-    throw errors::ClientError(errors::Msg("Cannot message yourself"));
   }
+  P2PMessage msg{
+      .id = NextId("pmsg"),
+      .sender_id = sender_id,
+      .recipient_id = recipient_id,
+      .content = content,
+      .created_at = userver::utils::datetime::Now(),
+  };
+  p2p_messages_.push_back(msg);
+  return msg;
 }
 
 std::vector<P2PMessage> MessengerStorage::ListP2PMessages(
     const std::string& user_id, const std::optional<std::string>& peer_id, int limit,
     int offset) const {
-  const auto user_pk = ParseEntityId(user_id, "user-");
-  std::optional<std::int64_t> peer_pk;
-  if (peer_id) {
-    peer_pk = ParseEntityId(*peer_id, "user-");
+  std::lock_guard lock(mutex_);
+  std::vector<P2PMessage> filtered;
+  for (const auto& m : p2p_messages_) {
+    const bool involves_user = m.sender_id == user_id || m.recipient_id == user_id;
+    if (!involves_user) continue;
+    if (peer_id) {
+      const bool with_peer = (m.sender_id == user_id && m.recipient_id == *peer_id) ||
+                             (m.sender_id == *peer_id && m.recipient_id == user_id);
+      if (!with_peer) continue;
+    }
+    filtered.push_back(m);
   }
-
-  const auto result = pg_->Execute(
-      ClusterHostType::kMaster,
-      "SELECT id, sender_id, recipient_id, content, created_at "
-      "FROM p2p_messages "
-      "WHERE (sender_id = $1 OR recipient_id = $1) "
-      "  AND ($2::bigint IS NULL "
-      "       OR (sender_id = $1 AND recipient_id = $2) "
-      "       OR (sender_id = $2 AND recipient_id = $1)) "
-      "ORDER BY created_at ASC, id ASC "
-      "LIMIT $3 OFFSET $4",
-      user_pk, peer_pk, limit, offset);
-
-  std::vector<P2PMessage> messages;
-  messages.reserve(result.Size());
-  for (const auto& row : result) {
-    messages.push_back(RowToP2PMessage(row));
-  }
-  return messages;
+  if (offset >= static_cast<int>(filtered.size())) return {};
+  auto end = std::min(offset + limit, static_cast<int>(filtered.size()));
+  return {filtered.begin() + offset, filtered.begin() + end};
 }
 
 std::optional<User> MessengerStorage::GetUser(const std::string& user_id) const {
-  const auto user_pk = ParseEntityId(user_id, "user-");
-  const auto result = pg_->Execute(ClusterHostType::kMaster,
-                                   "SELECT id, login, first_name, last_name, password_hash, "
-                                   "created_at FROM users WHERE id = $1",
-                                   user_pk);
-  if (result.IsEmpty()) return std::nullopt;
-  return RowToUser(result[0]);
+  std::lock_guard lock(mutex_);
+  auto it = users_.find(user_id);
+  if (it == users_.end()) return std::nullopt;
+  return it->second;
 }
 
 }  // namespace messenger::storage

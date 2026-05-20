@@ -3,11 +3,12 @@
 #include <chrono>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <userver/components/component_base.hpp>
+#include <userver/engine/mutex.hpp>
 #include <userver/formats/json/value.hpp>
-#include <userver/storages/postgres/cluster.hpp>
 
 namespace messenger::storage {
 
@@ -70,20 +71,28 @@ class MessengerStorage final : public userver::components::ComponentBase {
   GroupMessage AddGroupMessage(const std::string& chat_id, const std::string& sender_id,
                                const std::string& content);
   std::vector<GroupMessage> ListGroupMessages(const std::string& chat_id, int limit,
-                                              int offset) const;
+                                                int offset) const;
 
   P2PMessage AddP2PMessage(const std::string& sender_id, const std::string& recipient_id,
                            const std::string& content);
   std::vector<P2PMessage> ListP2PMessages(const std::string& user_id,
-                                          const std::optional<std::string>& peer_id,
-                                          int limit, int offset) const;
+                                            const std::optional<std::string>& peer_id,
+                                            int limit, int offset) const;
 
   std::optional<User> GetUser(const std::string& user_id) const;
 
  private:
-  userver::storages::postgres::ClusterPtr pg_;
+  std::string NextId(const char* prefix);
 
-  static std::int64_t ParseEntityId(const std::string& external_id, const char* prefix);
+  mutable userver::engine::Mutex mutex_;
+  std::uint64_t id_counter_{0};
+
+  std::unordered_map<std::string, User> users_;
+  std::unordered_map<std::string, std::string> login_index_;
+  std::unordered_map<std::string, GroupChat> chats_;
+  std::unordered_map<std::string, std::unordered_map<std::string, bool>> members_;
+  std::vector<GroupMessage> group_messages_;
+  std::vector<P2PMessage> p2p_messages_;
 };
 
 }  // namespace messenger::storage
