@@ -1,0 +1,112 @@
+components_manager:
+  task_processors:
+    main-task-processor:
+      worker_threads: $worker-threads
+    fs-task-processor:
+      worker_threads: $worker-fs-threads
+    default_task_processor: main-task-processor
+
+  components:
+    server:
+      listener:
+        port: $server-port
+        task_processor: main-task-processor
+
+    logging:
+      fs-task-processor: fs-task-processor
+      loggers:
+        default:
+          file_path: '@stderr'
+          level: $logger-level
+          overflow_behavior: discard
+
+    dynamic-config:
+      defaults:
+        HTTP_CLIENT_CONNECTION_POOL_SIZE: 1000
+
+    testsuite-support: {}
+
+    http-client:
+      load-enabled: $is_testing
+      fs-task-processor: fs-task-processor
+
+    dns-client:
+      fs-task-processor: fs-task-processor
+
+    tests-control:
+      load-enabled: $is_testing
+      path: /tests/{action}
+      method: POST
+      task_processor: main-task-processor
+
+    handler-ping:
+      path: /ping
+      method: GET
+      task_processor: main-task-processor
+      throttling_enabled: false
+      url_trailing_slash: strict-match
+
+    messenger-storage: {}
+
+    messenger-auth:
+      jwt-secret: $jwt-secret
+
+    handler-health:
+      path: /health
+      method: GET
+      task_processor: main-task-processor
+
+    handler-auth-register:
+      path: /api/v1/auth/register
+      method: POST
+      task_processor: main-task-processor
+
+    handler-auth-login:
+      path: /api/v1/auth/login
+      method: POST
+      task_processor: main-task-processor
+
+    handler-users-create:
+      path: /api/v1/users
+      method: POST
+      task_processor: main-task-processor
+
+    handler-users-by-login:
+      path: /api/v1/users/by-login/{login}
+      method: GET
+      task_processor: main-task-processor
+
+    handler-users-search:
+      path: /api/v1/users/search
+      method: GET
+      task_processor: main-task-processor
+
+    handler-group-chats-create:
+      path: /api/v1/group-chats
+      method: POST
+      task_processor: main-task-processor
+
+    handler-group-chats-add-member:
+      path: /api/v1/group-chats/{chat_id}/members
+      method: POST
+      task_processor: main-task-processor
+
+    handler-group-chats-post-message:
+      path: /api/v1/group-chats/{chat_id}/messages
+      method: POST
+      task_processor: main-task-processor
+
+    handler-group-chats-get-messages:
+      path: /api/v1/group-chats/{chat_id}/messages
+      method: GET
+      task_processor: main-task-processor
+
+    handler-p2p-send:
+      path: /api/v1/p2p/messages
+      method: POST
+      task_processor: main-task-processor
+
+    handler-p2p-list:
+      path: /api/v1/p2p/messages
+      method: GET
+      task_processor: main-task-processor
