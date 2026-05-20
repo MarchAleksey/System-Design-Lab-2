@@ -1,0 +1,27 @@
+__pycache__/
+.pytest_cache/
+build*/
+compile_commands.json
+.cache/
+.ccache/
+.idea/
+.vscode/
+!.vscode/c_cpp_properties.json
+.cores/
+cmake-build-*/
+Testing/
+.DS_Store
+Makefile.local
+CMakeUserPresets.json
+*.db
+.venv/
+venv/
+venv-*/
+
+# Debug / local
+debug-*.log
+*.log.tmp
+
+# CPM / third-party cache (if downloaded locally)
+_deps/
+third_party/
