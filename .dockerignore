@@ -1,0 +1,7 @@
+build*
+.vscode
+.git
+.ccache
+tests/__pycache__
+tests/.pytest_cache
+third_party/**/build*

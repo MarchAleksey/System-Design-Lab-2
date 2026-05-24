@@ -1,16 +1,18 @@
-FROM ghcr.io/userver-framework/ubuntu-24.04-userver:latest
+FROM ghcr.io/userver-framework/ubuntu-22.04-userver-pg-dev:latest
 
-WORKDIR /service
+ENV CCACHE_DIR=/home/user/lab2/.ccache \
+  CORES_DIR=/cores \
+  PREFIX=~/.local \
+  SHELL=/bin/bash
+
+USER user
+
+WORKDIR /home/user/lab2
 
 COPY . .
 
-RUN cmake --preset release && \
-    cmake --build build-release -j $(nproc) --target messenger_service
+RUN make build-release
 
 EXPOSE 8080
 
-ENV PREFIX=/service
-
-CMD ["./build-release/messenger_service", \
-     "--config", "/service/configs/static_config.yaml", \
-     "--config_vars", "/service/configs/config_vars.yaml"]
+CMD ["make", "start-release"]

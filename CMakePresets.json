@@ -9,7 +9,9 @@
     {
       "name": "debug",
       "displayName": "Debug",
-      "inherits": ["common-flags"],
+      "inherits": [
+        "common-flags"
+      ],
       "binaryDir": "${sourceDir}/build-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
@@ -19,7 +21,9 @@
     {
       "name": "release",
       "displayName": "Release",
-      "inherits": ["common-flags"],
+      "inherits": [
+        "common-flags"
+      ],
       "binaryDir": "${sourceDir}/build-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"

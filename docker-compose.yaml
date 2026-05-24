@@ -1,7 +1,19 @@
+version: "3.9"
+
 services:
-  messenger-api:
-    build: .
+  lab2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lab2-service
+    restart: unless-stopped
+    environment:
+      SECDIST_CONFIG: /etc/lab2/secdist.json
+    networks:
+      - network
     ports:
       - "8080:8080"
-    environment:
-      - jwt-secret=dev-secret-change-me
+
+networks:
+  network:
+    driver: bridge
